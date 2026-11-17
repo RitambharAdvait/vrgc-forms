@@ -212,7 +212,16 @@ service cloud.firestore {
     }
 
     // =========================================================================
-    // 12. Explicit Catch-All Default Deny
+    // 12. Public Club Events (Events Hub & Live Showcase)
+    // =========================================================================
+    // Isolated collection for public events displayed on vrgc-live and managed
+    // via vrgc-forms. Permissions/RBAC deferred to subsequent phase per instruction.
+    match /events/{eventId} {
+      allow read, write: if true;
+    }
+
+    // =========================================================================
+    // 13. Explicit Catch-All Default Deny
     // =========================================================================
     // Unmatched documents across all databases/collections are denied by default.
     match /{document=**} {

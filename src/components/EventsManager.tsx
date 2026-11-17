@@ -8,16 +8,24 @@ import {
   EVENT_TYPES,
   EVENT_STATUSES,
   EVENT_TYPE_STYLES,
-  MOCK_CLUB_EVENTS,
 } from '@/types/events';
+import {
+  subscribeToEvents,
+  createEvent,
+  updateEvent,
+  deleteEvent,
+} from '@/lib/events';
 
 interface EventsManagerProps {
   onRedirect?: () => void;
+  userEmail?: string | null;
 }
 
-export default function EventsManager({ onRedirect }: EventsManagerProps) {
-  // Local events state (starting with verified mock data for frontend testing)
-  const [events, setEvents] = useState<ClubEvent[]>(MOCK_CLUB_EVENTS);
+export default function EventsManager({ onRedirect, userEmail }: EventsManagerProps) {
+  // Real-time events list loaded directly from Firestore
+  const [events, setEvents] = useState<ClubEvent[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [syncStatus, setSyncStatus] = useState<'Synced' | 'Saving...' | 'Error'>('Synced');
 
   // Filter & Search states
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -27,6 +35,7 @@ export default function EventsManager({ onRedirect }: EventsManagerProps) {
   // Modal controls & editing state
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [editingEvent, setEditingEvent] = useState<ClubEvent | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
 
   // Form inputs state
   const [formName, setFormName] = useState<string>('');
@@ -47,6 +56,27 @@ export default function EventsManager({ onRedirect }: EventsManagerProps) {
     setToastMsg(msg);
     setTimeout(() => setToastMsg(null), 3000);
   };
+
+  // ── Real-Time Firestore Subscription ──────────────────────────────
+  useEffect(() => {
+    setLoading(true);
+    const unsubscribe = subscribeToEvents(
+      (liveEvents) => {
+        setEvents(liveEvents);
+        setLoading(false);
+        setSyncStatus('Synced');
+      },
+      (err) => {
+        console.warn('Events sync warning:', err);
+        setSyncStatus('Error');
+        setLoading(false);
+      }
+    );
+
+    return () => {
+      unsubscribe();
+    };
+  }, []);
 
   // Populate form when opening in create vs edit mode
   useEffect(() => {
@@ -105,14 +135,23 @@ export default function EventsManager({ onRedirect }: EventsManagerProps) {
     }
   };
 
-  const handleDeleteEvent = (eventId: string, eventName: string) => {
-    if (confirm(`Are you sure you want to delete "${eventName}"? This will remove it from the live site.`)) {
-      setEvents((prev) => prev.filter((e) => e.id !== eventId));
+  const handleDeleteEvent = async (eventId: string, eventName: string) => {
+    if (!confirm(`Are you sure you want to delete "${eventName}"? This will remove it from the live site.`)) {
+      return;
+    }
+    setSyncStatus('Saving...');
+    try {
+      await deleteEvent(eventId);
+      setSyncStatus('Synced');
       showToast(`Deleted "${eventName}"`);
+    } catch (err: any) {
+      console.error('Failed to delete event:', err);
+      setSyncStatus('Error');
+      showToast('Failed to delete event. Please check connection.');
     }
   };
 
-  const handleSaveForm = (e: React.FormEvent) => {
+  const handleSaveForm = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
 
@@ -144,46 +183,50 @@ export default function EventsManager({ onRedirect }: EventsManagerProps) {
       cleanLink = `https://${cleanLink}`;
     }
 
-    if (editingEvent) {
-      // Update existing event
-      setEvents((prev) =>
-        prev.map((ev) =>
-          ev.id === editingEvent.id
-            ? {
-                ...ev,
-                name: formName.trim(),
-                eventType: formType,
-                venue: formVenue.trim(),
-                eventDate: formDate,
-                eventTime: formTime.trim(),
-                description: formDesc.trim(),
-                registrationLink: cleanLink,
-                status: formStatus,
-                updatedAt: new Date().toISOString(),
-              }
-            : ev
-        )
-      );
-      showToast(`Updated "${formName.trim()}"`);
-    } else {
-      // Create new event
-      const newEvent: ClubEvent = {
-        id: `event-${Date.now()}`,
-        name: formName.trim(),
-        eventType: formType,
-        venue: formVenue.trim(),
-        eventDate: formDate,
-        eventTime: formTime.trim(),
-        description: formDesc.trim(),
-        registrationLink: cleanLink,
-        status: formStatus,
-        createdAt: new Date().toISOString(),
-      };
-      setEvents((prev) => [newEvent, ...prev]);
-      showToast(`Published "${formName.trim()}"`);
-    }
+    setIsSubmitting(true);
+    setSyncStatus('Saving...');
 
-    setIsModalOpen(false);
+    try {
+      if (editingEvent) {
+        // Update existing event in Firestore
+        await updateEvent(editingEvent.id, {
+          name: formName.trim(),
+          eventType: formType,
+          venue: formVenue.trim(),
+          eventDate: formDate,
+          eventTime: formTime.trim(),
+          description: formDesc.trim(),
+          registrationLink: cleanLink,
+          status: formStatus,
+        });
+        setSyncStatus('Synced');
+        showToast(`Updated "${formName.trim()}"`);
+      } else {
+        // Create new event in Firestore
+        await createEvent(
+          {
+            name: formName.trim(),
+            eventType: formType,
+            venue: formVenue.trim(),
+            eventDate: formDate,
+            eventTime: formTime.trim(),
+            description: formDesc.trim(),
+            registrationLink: cleanLink,
+            status: formStatus,
+          },
+          userEmail || 'admin'
+        );
+        setSyncStatus('Synced');
+        showToast(`Published "${formName.trim()}"`);
+      }
+      setIsModalOpen(false);
+    } catch (err: any) {
+      console.error('Failed to save event to Firestore:', err);
+      setSyncStatus('Error');
+      setFormError(`Failed to save: ${err?.message || 'Database connection error'}`);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const formatDateLabel = (dateStr: string) => {
@@ -217,17 +260,25 @@ export default function EventsManager({ onRedirect }: EventsManagerProps) {
             <span className="material-symbols-outlined text-white text-2xl">celebration</span>
           </div>
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <h1 className="text-xl font-black tracking-wide text-white">Live Events Hub</h1>
               <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950/80 text-emerald-300 border border-emerald-500/40 font-mono tracking-wider">
                 {activeCount} ACTIVE
               </span>
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-mono text-purple-300 bg-purple-950/60 border border-purple-500/30 hidden sm:inline-block">
-                vrgc.live sync
+              <span
+                className={`px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold tracking-wider border ${
+                  syncStatus === 'Synced'
+                    ? 'bg-emerald-950/60 text-emerald-300 border-emerald-500/30'
+                    : syncStatus === 'Saving...'
+                    ? 'bg-amber-950/60 text-amber-300 border-amber-500/30 animate-pulse'
+                    : 'bg-rose-950/60 text-rose-300 border-rose-500/30'
+                }`}
+              >
+                {syncStatus === 'Synced' ? '● LIVE SYNCED' : syncStatus === 'Saving...' ? '○ SAVING...' : '✕ SYNC ERROR'}
               </span>
             </div>
             <p className="text-xs text-slate-400 mt-0.5">
-              Publish and manage collegiate esports tournaments, LANs, and workshops in real time.
+              Publish and manage collegiate esports tournaments, LANs, and workshops synced live to vrgc.live.
             </p>
           </div>
         </div>
@@ -373,19 +424,31 @@ export default function EventsManager({ onRedirect }: EventsManagerProps) {
           )}
         </div>
 
-        {/* Empty Search Result */}
-        {filteredEvents.length === 0 ? (
+        {/* Loading Spinner */}
+        {loading && (
+          <div className="p-12 text-center text-slate-400 space-y-2">
+            <div className="w-8 h-8 rounded-full border-2 border-purple-500/30 border-t-purple-500 animate-spin mx-auto" />
+            <p className="text-xs font-mono">Syncing events with cloud database...</p>
+          </div>
+        )}
+
+        {/* Empty Search Result / Empty Collection */}
+        {!loading && filteredEvents.length === 0 && (
           <div className="p-12 rounded-2xl bg-[#0e061c]/60 border border-purple-500/20 text-center space-y-3">
             <div className="w-12 h-12 rounded-full bg-purple-950/60 border border-purple-500/30 flex items-center justify-center mx-auto text-purple-400">
               <span className="material-symbols-outlined text-2xl">event_busy</span>
             </div>
             <h3 className="text-base font-bold text-white">No matching events found</h3>
             <p className="text-xs text-slate-400 max-w-sm mx-auto">
-              No events matched your current search and category filters. Try clearing your filters or create a new event.
+              {events.length === 0
+                ? 'No events have been published yet. Click "+ Create Event" above to publish your first collegiate event!'
+                : 'No events matched your search and filter criteria. Try resetting filters.'}
             </p>
           </div>
-        ) : (
-          /* Event Cards Grid */
+        )}
+
+        {/* Event Cards Grid */}
+        {!loading && filteredEvents.length > 0 && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
             {filteredEvents.map((ev) => {
               const typeStyle = EVENT_TYPE_STYLES[ev.eventType] || EVENT_TYPE_STYLES.Other;
@@ -496,7 +559,7 @@ export default function EventsManager({ onRedirect }: EventsManagerProps) {
                     </div>
 
                     <span className="text-[10px] text-slate-500 font-mono">
-                      ID: {ev.id.slice(0, 12)}
+                      ID: {ev.id.slice(0, 10)}
                     </span>
                   </div>
                 </div>
@@ -523,12 +586,13 @@ export default function EventsManager({ onRedirect }: EventsManagerProps) {
                     {editingEvent ? 'Edit Event' : 'Create New Event'}
                   </h3>
                   <p className="text-[11px] text-slate-400">
-                    {editingEvent ? 'Modify event parameters and publishing details' : 'Publish a new tournament, LAN, or workshop'}
+                    {editingEvent ? 'Modify event parameters and publishing details' : 'Publish a new tournament, LAN, or workshop live'}
                   </p>
                 </div>
               </div>
 
               <button
+                disabled={isSubmitting}
                 onClick={() => setIsModalOpen(false)}
                 className="w-8 h-8 rounded-lg bg-[#140a27] hover:bg-purple-900/60 text-slate-400 hover:text-white flex items-center justify-center transition-colors cursor-pointer"
               >
@@ -554,6 +618,7 @@ export default function EventsManager({ onRedirect }: EventsManagerProps) {
                 </label>
                 <input
                   type="text"
+                  required
                   value={formName}
                   onChange={(e) => setFormName(e.target.value)}
                   placeholder="e.g. VRGC Valorant Campus Championship 2026"
@@ -607,6 +672,7 @@ export default function EventsManager({ onRedirect }: EventsManagerProps) {
                 </label>
                 <input
                   type="text"
+                  required
                   value={formVenue}
                   onChange={(e) => setFormVenue(e.target.value)}
                   placeholder="e.g. Central Auditorium & Spatial Lab (Lab 304)"
@@ -623,6 +689,7 @@ export default function EventsManager({ onRedirect }: EventsManagerProps) {
                   </label>
                   <input
                     type="date"
+                    required
                     value={formDate}
                     onChange={(e) => setFormDate(e.target.value)}
                     className="w-full px-3 py-2.5 rounded-xl bg-[#130726] border border-purple-500/30 text-white focus:outline-none focus:border-purple-400 transition-colors"
@@ -651,6 +718,7 @@ export default function EventsManager({ onRedirect }: EventsManagerProps) {
                 </label>
                 <textarea
                   rows={3}
+                  required
                   value={formDesc}
                   onChange={(e) => setFormDesc(e.target.value)}
                   placeholder="Provide tournament format, eligibility, schedule highlights, rules, and prizes..."
@@ -666,6 +734,7 @@ export default function EventsManager({ onRedirect }: EventsManagerProps) {
                 </label>
                 <input
                   type="text"
+                  required
                   value={formLink}
                   onChange={(e) => setFormLink(e.target.value)}
                   placeholder="https://forms.gle/... or https://discord.gg/vrgc"
@@ -680,6 +749,7 @@ export default function EventsManager({ onRedirect }: EventsManagerProps) {
               <div className="pt-3 border-t border-purple-500/20 flex items-center justify-end gap-3">
                 <button
                   type="button"
+                  disabled={isSubmitting}
                   onClick={() => setIsModalOpen(false)}
                   className="px-4 py-2 rounded-xl text-xs font-bold bg-[#140a27] hover:bg-[#1e0f3b] text-slate-300 border border-purple-500/20 transition-colors cursor-pointer"
                 >
@@ -687,12 +757,13 @@ export default function EventsManager({ onRedirect }: EventsManagerProps) {
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2.5 rounded-xl text-xs font-bold bg-gradient-to-r from-purple-600 via-fuchsia-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white shadow-lg shadow-purple-900/40 transition-all active:scale-95 cursor-pointer flex items-center gap-1.5"
+                  disabled={isSubmitting}
+                  className="px-5 py-2.5 rounded-xl text-xs font-bold bg-gradient-to-r from-purple-600 via-fuchsia-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white shadow-lg shadow-purple-900/40 transition-all active:scale-95 cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
                 >
                   <span className="material-symbols-outlined text-sm">
-                    {editingEvent ? 'save' : 'publish'}
+                    {isSubmitting ? 'sync' : editingEvent ? 'save' : 'publish'}
                   </span>
-                  <span>{editingEvent ? 'Save Changes' : 'Publish Event'}</span>
+                  <span>{isSubmitting ? 'Saving to Cloud...' : editingEvent ? 'Save Changes' : 'Publish Event'}</span>
                 </button>
               </div>
             </form>
