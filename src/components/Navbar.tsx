@@ -78,6 +78,12 @@ const Navbar: React.FC<NavbarProps> = ({
       onClick: () => handleMobileNavClick('dashboard'),
     },
     {
+      id: 'events',
+      label: 'Events Hub',
+      icon: 'celebration',
+      onClick: () => handleMobileNavClick('events'),
+    },
+    {
       id: 'members',
       label: 'Members Roster',
       icon: 'groups',
@@ -138,7 +144,7 @@ const Navbar: React.FC<NavbarProps> = ({
   ];
 
   const mobileMenuItems: StaggeredMenuItem[] = baseMobileMenuItems.filter((item) => {
-    if (item.id === 'dashboard' || item.id === 'contact' || item.id === 'about') return true;
+    if (item.id === 'dashboard' || item.id === 'events' || item.id === 'contact' || item.id === 'about') return true;
     if (isSuperAdmin) return true;
     if (!permissionsConfig) return true;
 

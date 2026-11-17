@@ -18,6 +18,7 @@ import MaintenanceModal, {
   MAINTENANCE_CATEGORIES,
 } from '@/components/MaintenanceModal';
 import PlannedEvents from '@/components/PlannedEvents';
+import EventsManager from '@/components/EventsManager';
 import IdeaHub from '@/components/IdeaHub';
 import SuperAdminManagementModal from '@/components/SuperAdminManagementModal';
 import SuperAdminControlCenter from '@/components/SuperAdminControlCenter';
@@ -155,7 +156,7 @@ function AppContent() {
   }, []);
 
   const getPagePermission = (pageKey: string) => {
-    if (pageKey === 'dashboard') return { canView: true, canEdit: true, bypassMaintenance: true };
+    if (pageKey === 'dashboard' || pageKey === 'events') return { canView: true, canEdit: true, bypassMaintenance: true };
     if (pageKey === 'superadmin') return { canView: isSuperAdmin, canEdit: isSuperAdmin, bypassMaintenance: true };
     return resolveUserPagePermission(
       pageKey as PageId,
@@ -240,7 +241,7 @@ function AppContent() {
       const path = window.location.pathname.replace(/^\//, '');
       const params = new URLSearchParams(window.location.search);
       const tabParam = params.get('tab');
-      const validPaths = ['referrals', 'idcard', 'payments', 'dashboard', 'members', 'planned_events', 'superadmin', 'documents', 'ideahub'];
+      const validPaths = ['referrals', 'idcard', 'payments', 'dashboard', 'members', 'planned_events', 'superadmin', 'documents', 'ideahub', 'events'];
 
       if (path && validPaths.includes(path)) {
         setActivePage(path);
@@ -272,6 +273,7 @@ function AppContent() {
   const getPageTitle = () => {
     switch (activePage) {
       case 'dashboard': return isFaculty ? 'Faculty Dashboard' : 'Dashboard';
+      case 'events': return 'Events Hub & Updater';
       case 'members': return 'Members Roster';
       case 'planned_events': return 'Planned Events';
       case 'ideahub': return 'Idea Curator Hub';
@@ -524,6 +526,10 @@ function AppContent() {
                 isAdmin={getPagePermission('ideahub').canEdit}
               />
             )
+          )}
+
+          {activePage === 'events' && (
+            <EventsManager onRedirect={() => handlePageChange('dashboard')} />
           )}
 
           {activePage === 'planned_events' && getPagePermission('planned_events').canView && (

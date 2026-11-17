@@ -28,6 +28,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   // Base menu items
   const baseItems = [
     { id: 'dashboard', label: 'Dashboard', icon: 'dashboard' },
+    { id: 'events', label: 'Events Hub', icon: 'celebration' },
     { id: 'members', label: 'Members Roster', icon: 'groups' },
     { id: 'ideahub', label: 'Idea Curator Hub', icon: 'lightbulb' },
     { id: 'planned_events', label: 'Planned Events', icon: 'event_upcoming' },
@@ -39,7 +40,7 @@ const Sidebar: React.FC<SidebarProps> = ({
 
   // Filter based on permissions matrix
   const menuItems = baseItems.filter((item) => {
-    if (item.id === 'dashboard') return true;
+    if (item.id === 'dashboard' || item.id === 'events') return true;
     if (isSuperAdmin) return true;
     if (!permissionsConfig) return true;
 
