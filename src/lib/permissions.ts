@@ -3,6 +3,7 @@ import { db } from './firebase';
 
 export type PageId =
   | 'members'
+  | 'events'
   | 'planned_events'
   | 'referrals'
   | 'idcard'
@@ -38,6 +39,7 @@ export interface ClubMetadata {
 
 export const ALL_PAGE_IDS: { id: PageId; label: string; icon: string }[] = [
   { id: 'members', label: 'Members Roster', icon: 'groups' },
+  { id: 'events', label: 'Events Hub', icon: 'celebration' },
   { id: 'planned_events', label: 'Planned Events', icon: 'event_upcoming' },
   { id: 'referrals', label: 'Referrals Portal', icon: 'share' },
   { id: 'idcard', label: 'ID Card Portal', icon: 'badge' },
@@ -102,13 +104,19 @@ export const createDefaultPagePermissionsMap = (
 
 export const DEFAULT_PERMISSIONS_CONFIG: PermissionsConfig = {
   roles: {
-    Admin: createDefaultPagePermissionsMap(true, true, true),
+    Admin: {
+      ...createDefaultPagePermissionsMap(true, true, true),
+      // Events Hub is restricted by default for Admin; only Super Admin has full mutation access out of the box
+      events: createDefaultPagePermission(true, false, false),
+    },
     'Payment Admin': {
       ...createDefaultPagePermissionsMap(true, false, true),
       payments: createDefaultPagePermission(true, true, true),
+      events: createDefaultPagePermission(true, false, false),
     },
     Technical: {
       ...createDefaultPagePermissionsMap(true, true, true),
+      events: createDefaultPagePermission(true, false, false),
     },
   },
   tiers: {
@@ -122,6 +130,7 @@ export const DEFAULT_PERMISSIONS_CONFIG: PermissionsConfig = {
       maintenance: createDefaultPagePermission(false, false, false),
       documents: createDefaultPagePermission(true, false, false),
       ideahub: createDefaultPagePermission(true, true, false),
+      events: createDefaultPagePermission(true, false, false),
     },
     faculty: {
       members: createDefaultPagePermission(true, false, false),
@@ -133,6 +142,7 @@ export const DEFAULT_PERMISSIONS_CONFIG: PermissionsConfig = {
       maintenance: createDefaultPagePermission(false, false, false),
       documents: createDefaultPagePermission(true, false, false),
       ideahub: createDefaultPagePermission(true, true, false),
+      events: createDefaultPagePermission(true, false, false),
     },
   },
   customRoles: [],

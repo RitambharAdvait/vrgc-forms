@@ -215,9 +215,11 @@ service cloud.firestore {
     // 12. Public Club Events (Events Hub & Live Showcase)
     // =========================================================================
     // Isolated collection for public events displayed on vrgc-live and managed
-    // via vrgc-forms. Permissions/RBAC deferred to subsequent phase per instruction.
+    // via vrgc-forms. Public spectators on vrgc-live have continuous read access.
+    // Database mutations are restricted strictly to verified Administrators and Super Admins.
     match /events/{eventId} {
-      allow read, write: if true;
+      allow read: if true;
+      allow create, update, delete: if isSuperAdmin() || isAdmin();
     }
 
     // =========================================================================

@@ -19,9 +19,10 @@ import {
 interface EventsManagerProps {
   onRedirect?: () => void;
   userEmail?: string | null;
+  canEdit?: boolean;
 }
 
-export default function EventsManager({ onRedirect, userEmail }: EventsManagerProps) {
+export default function EventsManager({ onRedirect, userEmail, canEdit = false }: EventsManagerProps) {
   // Real-time events list loaded directly from Firestore
   const [events, setEvents] = useState<ClubEvent[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
@@ -43,10 +44,43 @@ export default function EventsManager({ onRedirect, userEmail }: EventsManagerPr
   const [formVenue, setFormVenue] = useState<string>('');
   const [formDate, setFormDate] = useState<string>('');
   const [formTime, setFormTime] = useState<string>('');
+  const [timeInputMode, setTimeInputMode] = useState<'picker' | 'custom'>('picker');
+  const [formTimePicker, setFormTimePicker] = useState<string>('18:00');
   const [formDesc, setFormDesc] = useState<string>('');
   const [formLink, setFormLink] = useState<string>('');
   const [formStatus, setFormStatus] = useState<EventStatus>('upcoming');
   const [formError, setFormError] = useState<string | null>(null);
+
+  // Time formatting helpers
+  const formatTimeFromPicker = (rawTime: string) => {
+    if (!rawTime) return '';
+    try {
+      const [hStr, mStr] = rawTime.split(':');
+      const h = Number(hStr);
+      const ampm = h >= 12 ? 'PM' : 'AM';
+      const h12 = h % 12 || 12;
+      return `${rawTime} IST (${String(h12).padStart(2, '0')}:${mStr} ${ampm})`;
+    } catch {
+      return `${rawTime} IST`;
+    }
+  };
+
+  const handleTimePickerChange = (rawTime: string) => {
+    setFormTimePicker(rawTime);
+    if (rawTime) {
+      setFormTime(formatTimeFromPicker(rawTime));
+    }
+  };
+
+  const applyTimePreset = (presetText: string, rawPicker?: string) => {
+    setFormTime(presetText);
+    if (rawPicker) {
+      setFormTimePicker(rawPicker);
+      setTimeInputMode('picker');
+    } else {
+      setTimeInputMode('custom');
+    }
+  };
 
   // User feedback toast
   const [toastMsg, setToastMsg] = useState<string | null>(null);
@@ -85,7 +119,21 @@ export default function EventsManager({ onRedirect, userEmail }: EventsManagerPr
       setFormType(editingEvent.eventType);
       setFormVenue(editingEvent.venue);
       setFormDate(editingEvent.eventDate);
-      setFormTime(editingEvent.eventTime || '');
+      const evTime = editingEvent.eventTime || '';
+      setFormTime(evTime);
+
+      // Detect if time string matches standard HH:mm (e.g. "17:00" or "17:00 IST")
+      const timeMatch = evTime.match(/(\d{1,2}:\d{2})/);
+      if (timeMatch) {
+        setFormTimePicker(timeMatch[1].padStart(5, '0'));
+        setTimeInputMode('picker');
+      } else if (evTime) {
+        setTimeInputMode('custom');
+      } else {
+        setFormTimePicker('18:00');
+        setTimeInputMode('picker');
+      }
+
       setFormDesc(editingEvent.description);
       setFormLink(editingEvent.registrationLink);
       setFormStatus(editingEvent.status);
@@ -96,7 +144,9 @@ export default function EventsManager({ onRedirect, userEmail }: EventsManagerPr
       setFormVenue('');
       const today = new Date().toISOString().split('T')[0];
       setFormDate(today);
-      setFormTime('18:00 IST');
+      setFormTimePicker('18:00');
+      setFormTime('18:00 IST (06:00 PM)');
+      setTimeInputMode('picker');
       setFormDesc('');
       setFormLink('');
       setFormStatus('upcoming');
@@ -107,13 +157,13 @@ export default function EventsManager({ onRedirect, userEmail }: EventsManagerPr
   // Filtered events calculation
   const filteredEvents = useMemo(() => {
     return events.filter((ev) => {
-      // Search matching (name, venue, description)
+      // Search matching (name, venue, description) with defensive null-checks
       const q = searchQuery.toLowerCase().trim();
       const matchesSearch =
         !q ||
-        ev.name.toLowerCase().includes(q) ||
-        ev.venue.toLowerCase().includes(q) ||
-        ev.description.toLowerCase().includes(q);
+        (ev.name || '').toLowerCase().includes(q) ||
+        (ev.venue || '').toLowerCase().includes(q) ||
+        (ev.description || '').toLowerCase().includes(q);
 
       // Category matching
       const matchesType = selectedType === 'All' || ev.eventType === selectedType;
@@ -136,6 +186,10 @@ export default function EventsManager({ onRedirect, userEmail }: EventsManagerPr
   };
 
   const handleDeleteEvent = async (eventId: string, eventName: string) => {
+    if (!canEdit) {
+      showToast('Administrative privileges required to delete events.');
+      return;
+    }
     if (!confirm(`Are you sure you want to delete "${eventName}"? This will remove it from the live site.`)) {
       return;
     }
@@ -153,6 +207,10 @@ export default function EventsManager({ onRedirect, userEmail }: EventsManagerPr
 
   const handleSaveForm = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canEdit) {
+      setFormError('Administrative privileges required to create or edit events.');
+      return;
+    }
     setFormError(null);
 
     // Form Validations
@@ -229,7 +287,8 @@ export default function EventsManager({ onRedirect, userEmail }: EventsManagerPr
     }
   };
 
-  const formatDateLabel = (dateStr: string) => {
+  const formatDateLabel = (dateStr?: string) => {
+    if (!dateStr) return '';
     try {
       const parsed = new Date(dateStr);
       if (!isNaN(parsed.getTime())) {
@@ -294,16 +353,23 @@ export default function EventsManager({ onRedirect, userEmail }: EventsManagerPr
             </button>
           )}
 
-          <button
-            onClick={() => {
-              setEditingEvent(null);
-              setIsModalOpen(true);
-            }}
-            className="px-4 py-2.5 rounded-xl text-xs font-bold bg-gradient-to-r from-purple-600 via-fuchsia-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white shadow-lg shadow-purple-900/40 transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer"
-          >
-            <span className="material-symbols-outlined text-base">add_circle</span>
-            <span>Create Event</span>
-          </button>
+          {canEdit ? (
+            <button
+              onClick={() => {
+                setEditingEvent(null);
+                setIsModalOpen(true);
+              }}
+              className="px-4 py-2.5 rounded-xl text-xs font-bold bg-gradient-to-r from-purple-600 via-fuchsia-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white shadow-lg shadow-purple-900/40 transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer"
+            >
+              <span className="material-symbols-outlined text-base">add_circle</span>
+              <span>Create Event</span>
+            </button>
+          ) : (
+            <div className="px-3.5 py-2 rounded-xl text-xs font-mono font-bold bg-purple-950/40 text-purple-300 border border-purple-500/30 flex items-center gap-1.5">
+              <span className="material-symbols-outlined text-sm">visibility</span>
+              <span>VIEW ONLY</span>
+            </div>
+          )}
         </div>
       </header>
 
@@ -481,25 +547,27 @@ export default function EventsManager({ onRedirect, userEmail }: EventsManagerPr
                       </div>
 
                       {/* Card Menu Actions */}
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          onClick={() => {
-                            setEditingEvent(ev);
-                            setIsModalOpen(true);
-                          }}
-                          className="w-8 h-8 rounded-lg bg-[#140a27] hover:bg-purple-900/60 text-slate-300 hover:text-white border border-purple-500/20 flex items-center justify-center transition-all cursor-pointer"
-                          title="Edit Event"
-                        >
-                          <span className="material-symbols-outlined text-sm">edit</span>
-                        </button>
-                        <button
-                          onClick={() => handleDeleteEvent(ev.id, ev.name)}
-                          className="w-8 h-8 rounded-lg bg-[#140a27] hover:bg-rose-950/80 text-slate-400 hover:text-rose-300 border border-purple-500/20 hover:border-rose-500/40 flex items-center justify-center transition-all cursor-pointer"
-                          title="Delete Event"
-                        >
-                          <span className="material-symbols-outlined text-sm">delete</span>
-                        </button>
-                      </div>
+                      {canEdit && (
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => {
+                              setEditingEvent(ev);
+                              setIsModalOpen(true);
+                            }}
+                            className="w-8 h-8 rounded-lg bg-[#140a27] hover:bg-purple-900/60 text-slate-300 hover:text-white border border-purple-500/20 flex items-center justify-center transition-all cursor-pointer"
+                            title="Edit Event"
+                          >
+                            <span className="material-symbols-outlined text-sm">edit</span>
+                          </button>
+                          <button
+                            onClick={() => handleDeleteEvent(ev.id, ev.name)}
+                            className="w-8 h-8 rounded-lg bg-[#140a27] hover:bg-rose-950/80 text-slate-400 hover:text-rose-300 border border-purple-500/20 hover:border-rose-500/40 flex items-center justify-center transition-all cursor-pointer"
+                            title="Delete Event"
+                          >
+                            <span className="material-symbols-outlined text-sm">delete</span>
+                          </button>
+                        </div>
+                      )}
                     </div>
 
                     {/* Event Title */}
@@ -696,17 +764,96 @@ export default function EventsManager({ onRedirect, userEmail }: EventsManagerPr
                   />
                 </div>
 
+                {/* Event Time with Mode Toggle & Preset Chips */}
                 <div className="space-y-1.5">
-                  <label className="text-[11px] font-bold text-slate-300 uppercase tracking-wider font-mono">
-                    Time / Duration
-                  </label>
-                  <input
-                    type="text"
-                    value={formTime}
-                    onChange={(e) => setFormTime(e.target.value)}
-                    placeholder="e.g. 17:00 IST or 10:00 AM - 48 Hours"
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#130726] border border-purple-500/30 text-white placeholder-slate-500 focus:outline-none focus:border-purple-400 transition-colors"
-                  />
+                  <div className="flex items-center justify-between">
+                    <label className="text-[11px] font-bold text-slate-300 uppercase tracking-wider font-mono">
+                      Time / Duration
+                    </label>
+
+                    {/* Mode Switcher Toggle */}
+                    <div className="flex items-center gap-1 bg-[#100520] p-0.5 rounded-lg border border-purple-500/20 text-[10px] font-mono">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTimeInputMode('picker');
+                          if (formTimePicker) handleTimePickerChange(formTimePicker);
+                        }}
+                        className={`px-2 py-0.5 rounded-md font-bold transition-all cursor-pointer ${
+                          timeInputMode === 'picker'
+                            ? 'bg-purple-600 text-white shadow-sm'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        ⏰ Clock
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setTimeInputMode('custom')}
+                        className={`px-2 py-0.5 rounded-md font-bold transition-all cursor-pointer ${
+                          timeInputMode === 'custom'
+                            ? 'bg-purple-600 text-white shadow-sm'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        ✍ Custom
+                      </button>
+                    </div>
+                  </div>
+
+                  {timeInputMode === 'picker' ? (
+                    <div className="space-y-1">
+                      <input
+                        type="time"
+                        value={formTimePicker}
+                        onChange={(e) => handleTimePickerChange(e.target.value)}
+                        className="w-full px-3.5 py-2.5 rounded-xl bg-[#130726] border border-purple-500/30 text-white focus:outline-none focus:border-purple-400 transition-colors font-mono text-sm [color-scheme:dark]"
+                      />
+                      {formTime && (
+                        <div className="flex items-center gap-1.5 text-[10px] font-mono text-purple-300 pt-0.5">
+                          <span className="text-slate-500 font-sans">Formatted:</span>
+                          <span className="bg-purple-500/15 border border-purple-500/30 px-2 py-0.5 rounded font-bold">
+                            {formTime}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="space-y-1">
+                      <input
+                        type="text"
+                        value={formTime}
+                        onChange={(e) => setFormTime(e.target.value)}
+                        placeholder="e.g. 10:00 AM - 48 Hours or All Day"
+                        className="w-full px-3.5 py-2.5 rounded-xl bg-[#130726] border border-purple-500/30 text-white placeholder-slate-500 focus:outline-none focus:border-purple-400 transition-colors text-xs"
+                      />
+                      <p className="text-[10px] text-slate-500">
+                        Custom text for multi-day hackathons, game jams, or all-day conventions.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* One-Click Quick Presets Bar */}
+                  <div className="flex items-center gap-1.5 pt-1 overflow-x-auto pb-0.5 no-scrollbar">
+                    <span className="text-[10px] font-mono uppercase text-slate-500 shrink-0">Presets:</span>
+                    {[
+                      { label: '10:00 AM', raw: '10:00', text: '10:00 AM IST' },
+                      { label: '14:00 (2 PM)', raw: '14:00', text: '14:00 IST (02:00 PM)' },
+                      { label: '17:00 (5 PM)', raw: '17:00', text: '17:00 IST (05:00 PM)' },
+                      { label: '19:00 (7 PM)', raw: '19:00', text: '19:00 IST (07:00 PM)' },
+                      { label: 'All Day', raw: '', text: 'All Day Event' },
+                      { label: '48-Hr Jam', raw: '', text: '10:00 AM - 48 Hours' },
+                    ].map((p) => (
+                      <button
+                        key={p.label}
+                        type="button"
+                        onClick={() => applyTimePreset(p.text, p.raw)}
+                        className="px-2 py-0.5 rounded-md text-[10px] font-mono bg-[#140a27] hover:bg-purple-900/50 text-slate-300 hover:text-white border border-purple-500/20 shrink-0 transition-colors cursor-pointer"
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
 

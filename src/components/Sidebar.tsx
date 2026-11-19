@@ -40,7 +40,7 @@ const Sidebar: React.FC<SidebarProps> = ({
 
   // Filter based on permissions matrix
   const menuItems = baseItems.filter((item) => {
-    if (item.id === 'dashboard' || item.id === 'events') return true;
+    if (item.id === 'dashboard') return true;
     if (isSuperAdmin) return true;
     if (!permissionsConfig) return true;
 

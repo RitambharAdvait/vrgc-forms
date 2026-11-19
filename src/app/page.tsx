@@ -528,8 +528,12 @@ function AppContent() {
             )
           )}
 
-          {activePage === 'events' && (
-            <EventsManager onRedirect={() => handlePageChange('dashboard')} />
+          {activePage === 'events' && getPagePermission('events').canView && (
+            <EventsManager
+              onRedirect={() => handlePageChange('dashboard')}
+              userEmail={userEmail}
+              canEdit={isSuperAdmin || getPagePermission('events').canEdit}
+            />
           )}
 
           {activePage === 'planned_events' && getPagePermission('planned_events').canView && (
