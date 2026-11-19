@@ -17,7 +17,7 @@ import MaintenanceModal, {
   MaintenanceConfigState,
   MAINTENANCE_CATEGORIES,
 } from '@/components/MaintenanceModal';
-import PlannedEvents from '@/components/PlannedEvents';
+import Events from '@/components/Events';
 import IdeaHub from '@/components/IdeaHub';
 import LiveBroadcastControl from '@/components/LiveBroadcastControl';
 import SuperAdminManagementModal from '@/components/SuperAdminManagementModal';
@@ -242,7 +242,7 @@ function AppContent() {
       const path = window.location.pathname.replace(/^\//, '');
       const params = new URLSearchParams(window.location.search);
       const tabParam = params.get('tab');
-      const validPaths = ['referrals', 'idcard', 'payments', 'dashboard', 'members', 'planned_events', 'superadmin', 'documents', 'ideahub', 'live_admin'];
+      const validPaths = ['referrals', 'idcard', 'payments', 'dashboard', 'members', 'events', 'planned_events', 'superadmin', 'documents', 'ideahub', 'live_admin'];
 
       if (path && validPaths.includes(path)) {
         setActivePage(path);
@@ -275,7 +275,8 @@ function AppContent() {
     switch (activePage) {
       case 'dashboard': return isFaculty ? 'Faculty Dashboard' : 'Dashboard';
       case 'members': return 'Members Roster';
-      case 'planned_events': return 'Planned Events';
+      case 'events':
+      case 'planned_events': return 'Events';
       case 'ideahub': return 'Idea Curator Hub';
       case 'referrals': return 'Referrals';
       case 'idcard': return 'ID Card Portal';
@@ -530,17 +531,16 @@ function AppContent() {
             )
           )}
 
-          {activePage === 'planned_events' && getPagePermission('planned_events').canView && (
+          {(activePage === 'events' || activePage === 'planned_events') && getPagePermission('planned_events').canView && (
             isSectionLocked('planned_events') ? (
               <MaintenanceScreen
-                section="Planned Events"
+                section="Events"
                 onBack={() => handlePageChange('dashboard')}
               />
             ) : (
-              <PlannedEvents
+              <Events
                 onRedirect={() => handlePageChange('dashboard')}
                 isAdmin={getPagePermission('planned_events').canEdit}
-                isFaculty={isFaculty}
                 userEmail={userEmail}
                 userName={cleanFullName(memberData?.name || user?.displayName || undefined, memberData?.registrationNumber)}
               />

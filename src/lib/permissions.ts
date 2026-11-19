@@ -44,7 +44,7 @@ export interface ClubMetadata {
 
 export const ALL_PAGE_IDS: { id: PageId; label: string; icon: string }[] = [
   { id: 'members', label: 'Members Roster', icon: 'groups' },
-  { id: 'planned_events', label: 'Planned Events', icon: 'event_upcoming' },
+  { id: 'planned_events', label: 'Events', icon: 'event_upcoming' },
   { id: 'referrals', label: 'Referrals Portal', icon: 'share' },
   { id: 'idcard', label: 'ID Card Portal', icon: 'badge' },
   { id: 'payments', label: 'Payments & Dues', icon: 'payments' },

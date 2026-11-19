@@ -25,8 +25,8 @@ export const MAINTENANCE_CATEGORIES: MaintenanceCategory[] = [
   },
   {
     id: 'planned_events',
-    label: 'Planned Future Events',
-    description: 'Faculty advisory review desk, timeline, and event proposals',
+    label: 'Events Manager',
+    description: 'Tournaments, workshops, live event operations, and vrgc.live synchronization',
     icon: 'event_upcoming',
   },
   {
