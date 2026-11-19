@@ -91,7 +91,7 @@ const Navbar: React.FC<NavbarProps> = ({
     },
     {
       id: 'planned_events',
-      label: 'Planned Events',
+      label: 'Events',
       icon: 'event_upcoming',
       onClick: () => handleMobileNavClick('planned_events'),
     },

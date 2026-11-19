@@ -148,7 +148,7 @@ service cloud.firestore {
     }
 
     // =========================================================================
-    // 5. Faculty & Events
+    // 5. Faculty, Blocked Users & Public Events
     // =========================================================================
     match /faculty/{facultyId} {
       allow read: if isActiveMember();
@@ -162,6 +162,12 @@ service cloud.firestore {
 
     match /future_events/{eventId} {
       allow read: if isActiveMember();
+      allow write: if isAdmin();
+    }
+
+    // Public Events: Synchronized in real-time with vrgc.live
+    match /events/{eventId} {
+      allow read: if true;
       allow write: if isAdmin();
     }
 

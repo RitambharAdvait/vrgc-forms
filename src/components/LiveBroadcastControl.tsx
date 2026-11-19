@@ -4,6 +4,13 @@ import React, { useState, useEffect } from "react";
 import { doc, onSnapshot, setDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/lib/auth-context";
+import {
+  GameProfile,
+  GameTypeId,
+  GAME_PROFILES,
+  VALORANT_PROFILE,
+  getGameProfile,
+} from "@/types/broadcast-profiles";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -516,7 +523,25 @@ export default function LiveBroadcastControl() {
       if (snap.exists()) {
         const data = snap.data() as any;
         if (data.matches && Array.isArray(data.matches) && data.matches.length > 0) {
-          setTournament(data as LiveMatchTournamentState);
+          // Deduplicate any matches with colliding IDs that may have been saved to Firestore
+          const seen = new Set<string>();
+          const dedupedMatches = (data.matches as ParallelMatch[]).map((m, idx) => {
+            let finalId = m.id || `match-${idx + 1}`;
+            if (seen.has(finalId)) {
+              finalId = `match-${idx + 1}-${Date.now()}`;
+            }
+            seen.add(finalId);
+            return {
+              ...m,
+              id: finalId,
+              matchNumber: m.matchNumber || idx + 1,
+            };
+          });
+
+          setTournament({
+            ...(data as LiveMatchTournamentState),
+            matches: dedupedMatches,
+          });
         } else {
           // Backward compatibility migration: wrap existing single match into matches[0]
           setTournament((prev) => ({
@@ -600,61 +625,103 @@ export default function LiveBroadcastControl() {
     if (newCount === tournament.activeMatchCount) return;
 
     let updatedMatches = [...tournament.matches];
+    const profile = getGameProfile(tournament.gameType);
+
+    // If matches were somehow truncated or deleted, ensure we only add with unique IDs
     while (updatedMatches.length < newCount) {
       const matchNum = updatedMatches.length + 1;
+      const uniqueId = `match-${matchNum}`;
+      // Check if this ID already exists anywhere in the array
+      const idExists = updatedMatches.some((m) => m.id === uniqueId);
+      const safeId = idExists ? `match-${Date.now()}-${matchNum}` : uniqueId;
+
+      const defaultMap = profile.maps[(matchNum - 1) % profile.maps.length] || profile.maps[0] || "Ascent";
       updatedMatches.push({
-        id: `match-${matchNum}`,
+        id: safeId,
         matchNumber: matchNum,
         stage: matchNum === 1 ? "Grand Finals" : matchNum <= 3 ? "Semi-Finals" : "Quarter-Finals",
         isFeatured: false,
         status: "upcoming",
-        mapName: VALORANT_MAP_POOL[(matchNum - 1) % VALORANT_MAP_POOL.length] || "Ascent",
-        seriesFormat: "BO3",
+        mapName: defaultMap,
+        seriesFormat: profile.defaultSeriesFormat,
         currentMapNumber: 1,
-        totalMaps: 3,
+        totalMaps: profile.defaultSeriesFormat === "BO5" ? 5 : profile.defaultSeriesFormat === "BO1" ? 1 : 3,
         phase: "first_half",
         activeTimeoutTeamId: null,
         team1: {
-          id: `m${matchNum}-t1`,
+          id: `m${matchNum}-t1-${Date.now()}`,
           name: `Team ${matchNum * 2 - 1}`,
           tag: `T${matchNum * 2 - 1}`,
           captain: "",
-          logo: "/assets/teams/team_attackers.svg",
-          side: "ATK",
+          logo: profile.sides.side1.defaultLogo,
+          side: profile.sides.side1.label as any,
           score: 0,
           mapsWon: 0,
-          timeoutsRemaining: 2,
-          accentColor: "#ff4655",
+          timeoutsRemaining: profile.scoring.defaultTimeoutsPerTeam,
+          accentColor: profile.sides.side1.defaultColor,
         },
         team2: {
-          id: `m${matchNum}-t2`,
+          id: `m${matchNum}-t2-${Date.now()}`,
           name: `Team ${matchNum * 2}`,
           tag: `T${matchNum * 2}`,
           captain: "",
-          logo: "/assets/teams/team_defenders.svg",
-          side: "DEF",
+          logo: profile.sides.side2.defaultLogo,
+          side: profile.sides.side2.label as any,
           score: 0,
           mapsWon: 0,
-          timeoutsRemaining: 2,
-          accentColor: "#00f0ff",
+          timeoutsRemaining: profile.scoring.defaultTimeoutsPerTeam,
+          accentColor: profile.sides.side2.defaultColor,
         },
       });
+    }
+
+    // Ensure all matches in the active array have strictly unique IDs and clean 1-based matchNumbers
+    const seenIds = new Set<string>();
+    const sanitizedMatches = updatedMatches.map((m, idx) => {
+      let finalId = m.id || `match-${idx + 1}`;
+      if (seenIds.has(finalId)) {
+        finalId = `match-${idx + 1}-${Date.now()}`;
+      }
+      seenIds.add(finalId);
+      return {
+        ...m,
+        id: finalId,
+        matchNumber: idx + 1,
+      };
+    });
+
+    let newFeaturedId = tournament.featuredMatchId;
+    if (delta < 0 && newCount < sanitizedMatches.length) {
+      const activeSubset = sanitizedMatches.slice(0, newCount);
+      if (!activeSubset.some((m) => m.id === newFeaturedId)) {
+        newFeaturedId = activeSubset[0]?.id || sanitizedMatches[0]?.id || "match-1";
+      }
     }
 
     persistTournament({
       ...tournament,
       activeMatchCount: newCount,
-      matches: updatedMatches,
+      featuredMatchId: newFeaturedId,
+      matches: sanitizedMatches,
     });
   };
 
   const handleDeleteMatch = (matchId: string) => {
     if (tournament.activeMatchCount <= 1) return;
     const remaining = tournament.matches.filter((m) => m.id !== matchId);
-    const reindexed = remaining.map((m, idx) => ({
-      ...m,
-      matchNumber: idx + 1,
-    }));
+    const seenIds = new Set<string>();
+    const reindexed = remaining.map((m, idx) => {
+      let finalId = m.id || `match-${idx + 1}`;
+      if (seenIds.has(finalId)) {
+        finalId = `match-${idx + 1}-${Date.now()}`;
+      }
+      seenIds.add(finalId);
+      return {
+        ...m,
+        id: finalId,
+        matchNumber: idx + 1,
+      };
+    });
     const newCount = Math.max(1, tournament.activeMatchCount - 1);
     const newFeatured =
       tournament.featuredMatchId === matchId
@@ -696,8 +763,13 @@ export default function LiveBroadcastControl() {
       const nextScore = Math.max(0, m[teamKey].score + delta);
       let nextPhase = m.phase;
       const otherKey = teamKey === "team1" ? "team2" : "team1";
-      if (nextScore >= 12 && m[otherKey].score === 12) {
-        nextPhase = "overtime";
+      const profile = getGameProfile(tournament.gameType);
+      const otScore = profile.scoring.overtimeTriggerScore || 12;
+
+      if (profile.scoring.type === "round_based" && otScore > 0) {
+        if (nextScore >= otScore && m[otherKey].score >= otScore) {
+          nextPhase = "overtime";
+        }
       }
       return {
         ...m,
@@ -711,44 +783,78 @@ export default function LiveBroadcastControl() {
   };
 
   const updateMapsWon = (matchId: string, teamKey: "team1" | "team2", delta: number) => {
-    updateMatch(matchId, (m) => ({
-      ...m,
-      [teamKey]: {
-        ...m[teamKey],
-        mapsWon: Math.max(0, m[teamKey].mapsWon + delta),
-      },
-    }));
+    updateMatch(matchId, (m) => {
+      const maxMaps = Math.ceil(m.totalMaps / 2);
+      const nextMapsWon = Math.max(0, Math.min(maxMaps, m[teamKey].mapsWon + delta));
+      const hasWonSeries = nextMapsWon >= maxMaps;
+      return {
+        ...m,
+        status: hasWonSeries ? "ended" : m.status,
+        phase: hasWonSeries ? "ended" : m.phase,
+        [teamKey]: {
+          ...m[teamKey],
+          mapsWon: nextMapsWon,
+        },
+      };
+    });
   };
 
   const handleSwapSides = (matchId: string) => {
     updateMatch(matchId, (m) => {
-      const t1NextSide = m.team1.side === "ATK" ? "DEF" : "ATK";
-      const t2NextSide = m.team2.side === "ATK" ? "DEF" : "ATK";
+      const profile = getGameProfile(tournament.gameType);
+      const s1 = profile.sides.side1;
+      const s2 = profile.sides.side2;
+      const isCurrentlySide1 = m.team1.side === s1.label;
+      const t1NextSide = isCurrentlySide1 ? s2.label : s1.label;
+      const t2NextSide = isCurrentlySide1 ? s1.label : s2.label;
+      const t1NextLogo = isCurrentlySide1 ? s2.defaultLogo : s1.defaultLogo;
+      const t2NextLogo = isCurrentlySide1 ? s1.defaultLogo : s2.defaultLogo;
+      const t1NextColor = isCurrentlySide1 ? s2.defaultColor : s1.defaultColor;
+      const t2NextColor = isCurrentlySide1 ? s1.defaultColor : s2.defaultColor;
+
       return {
         ...m,
         phase: m.phase === "first_half" ? "second_half" : m.phase,
         team1: {
           ...m.team1,
-          side: t1NextSide,
-          accentColor: t1NextSide === "ATK" ? "#ff4655" : "#00f0ff",
+          side: t1NextSide as any,
+          logo: t1NextLogo,
+          accentColor: t1NextColor,
         },
         team2: {
           ...m.team2,
-          side: t2NextSide,
-          accentColor: t2NextSide === "ATK" ? "#ff4655" : "#00f0ff",
+          side: t2NextSide as any,
+          logo: t2NextLogo,
+          accentColor: t2NextColor,
         },
       };
     });
   };
 
   const handleResetMatch = (matchId: string) => {
-    if (confirm("Reset current scores for this match back to 0 - 0?")) {
+    if (confirm("Reset current scores and map counters for this match back to 0 - 0?")) {
+      const profile = getGameProfile(tournament.gameType);
       updateMatch(matchId, (m) => ({
         ...m,
+        status: "live",
         phase: "first_half",
         activeTimeoutTeamId: null,
-        team1: { ...m.team1, score: 0 },
-        team2: { ...m.team2, score: 0 },
+        team1: {
+          ...m.team1,
+          score: 0,
+          mapsWon: 0,
+          side: profile.sides.side1.label as any,
+          logo: profile.sides.side1.defaultLogo,
+          accentColor: profile.sides.side1.defaultColor,
+        },
+        team2: {
+          ...m.team2,
+          score: 0,
+          mapsWon: 0,
+          side: profile.sides.side2.label as any,
+          logo: profile.sides.side2.defaultLogo,
+          accentColor: profile.sides.side2.defaultColor,
+        },
       }));
     }
   };
@@ -834,7 +940,61 @@ export default function LiveBroadcastControl() {
     });
   };
 
-  const activeMatches = tournament.matches.slice(0, tournament.activeMatchCount);
+  // Safely memoize active matches to guarantee non-colliding React keys across any slice
+  const activeMatches = React.useMemo(() => {
+    const rawMatches = tournament.matches || [];
+    const count = Math.max(1, Math.min(5, tournament.activeMatchCount || 1));
+    const slice = rawMatches.slice(0, count);
+    const seen = new Set<string>();
+
+    return slice.map((m, idx) => {
+      let keyId = m.id;
+      if (!keyId || seen.has(keyId)) {
+        keyId = `match-active-${idx + 1}-${m.matchNumber || idx + 1}`;
+      }
+      seen.add(keyId);
+      return {
+        ...m,
+        id: keyId,
+        matchNumber: m.matchNumber || idx + 1,
+      };
+    });
+  }, [tournament.matches, tournament.activeMatchCount]);
+  const currentProfile = getGameProfile(tournament.gameType);
+
+  const handleSelectGameProfile = (profileId: GameTypeId) => {
+    const profile = GAME_PROFILES[profileId] || VALORANT_PROFILE;
+    const defaultMap = profile.maps[0] || "Default Map";
+
+    // Adapt active matches to the new profile (sides, logos, default maps)
+    const adaptedMatches = tournament.matches.map((m, idx) => ({
+      ...m,
+      mapName: profile.maps[(idx) % profile.maps.length] || defaultMap,
+      seriesFormat: profile.defaultSeriesFormat,
+      team1: {
+        ...m.team1,
+        side: profile.sides.side1.label as any,
+        logo: profile.sides.side1.defaultLogo,
+        accentColor: profile.sides.side1.defaultColor,
+      },
+      team2: {
+        ...m.team2,
+        side: profile.sides.side2.label as any,
+        logo: profile.sides.side2.defaultLogo,
+        accentColor: profile.sides.side2.defaultColor,
+      },
+    }));
+
+    persistTournament({
+      ...tournament,
+      gameType: profile.id,
+      tournamentName:
+        tournament.tournamentName === "VRGC Valorant Invitational"
+          ? profile.defaultTournamentName
+          : tournament.tournamentName,
+      matches: adaptedMatches,
+    });
+  };
 
   // Dynamic grid class based on number of active matches
   const getGridClass = () => {
@@ -929,60 +1089,81 @@ export default function LiveBroadcastControl() {
       </header>
 
       {/* ── Parallel Matches Switcher & View Mode Toolbar ───────────── */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-xl bg-[#0e061c]/80 border border-purple-500/20 backdrop-blur-xl">
-        {/* ── Single Entry Point: Teams & Parallel Matches Stepper ── */}
-        <div className="flex items-center gap-3">
-          <div className="flex flex-col">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-purple-300 flex items-center gap-1.5">
-              <span className="material-symbols-outlined text-sm text-purple-400">groups</span>
-              <span>Tournament Teams:</span>
-            </span>
-            <span className="text-[10px] text-slate-400 font-mono">
-              {tournament.activeMatchCount} Parallel {tournament.activeMatchCount === 1 ? "Match" : "Matches"} Active
-            </span>
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 p-4 rounded-xl bg-[#0e061c]/80 border border-purple-500/20 backdrop-blur-xl">
+        <div className="flex items-center gap-4 flex-wrap">
+          {/* Game Profile Selector */}
+          <div className="flex items-center gap-2 bg-[#130726] border border-purple-500/30 rounded-xl px-3 py-1.5 shadow-inner">
+            <span className="material-symbols-outlined text-base text-rose-400">videogame_asset</span>
+            <div className="flex flex-col">
+              <span className="text-[9px] uppercase font-mono text-purple-300 font-bold tracking-wider">Game Profile</span>
+              <select
+                value={tournament.gameType || "valorant"}
+                onChange={(e) => handleSelectGameProfile(e.target.value as GameTypeId)}
+                className="bg-transparent text-xs font-black text-white focus:outline-none cursor-pointer pr-2"
+              >
+                {Object.values(GAME_PROFILES).map((p) => (
+                  <option key={p.id} value={p.id} className="bg-[#120524] text-white">
+                    {p.displayName} ({p.sides.side1.label}/{p.sides.side2.label})
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
 
-          <div className="flex items-center bg-[#130726] border border-purple-500/30 rounded-xl p-1 shadow-inner shadow-black/50">
-            {/* Minus Button */}
-            <button
-              onClick={() => handleStepMatchCount(-1)}
-              disabled={tournament.activeMatchCount <= 1}
-              className={`w-9 h-9 rounded-lg flex items-center justify-center font-black transition-all cursor-pointer ${
-                tournament.activeMatchCount <= 1
-                  ? "opacity-30 cursor-not-allowed text-slate-500"
-                  : "bg-purple-950/70 hover:bg-purple-800 text-purple-200 border border-purple-500/20 active:scale-95"
-              }`}
-              title="Remove 2 Teams (1 Match)"
-              aria-label="Decrease teams"
-            >
-              <span className="material-symbols-outlined text-base">remove</span>
-            </button>
-
-            {/* Central Display */}
-            <div className="px-4 py-1 text-center min-w-[130px]">
-              <div className="text-sm font-black text-white tracking-wide flex items-center justify-center gap-1.5">
-                <span className="text-purple-400 font-mono text-base">{tournament.activeMatchCount * 2}</span>
-                <span className="text-xs uppercase font-bold text-slate-200">Teams</span>
-              </div>
-              <div className="text-[10px] font-mono text-purple-300/80 font-bold">
-                {tournament.activeMatchCount} {tournament.activeMatchCount === 1 ? "Match" : "Matches"}
-              </div>
+          {/* ── Single Entry Point: Teams & Parallel Matches Stepper ── */}
+          <div className="flex items-center gap-3">
+            <div className="flex flex-col">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-purple-300 flex items-center gap-1.5">
+                <span className="material-symbols-outlined text-sm text-purple-400">groups</span>
+                <span>Tournament Teams:</span>
+              </span>
+              <span className="text-[10px] text-slate-400 font-mono">
+                {tournament.activeMatchCount} Parallel {tournament.activeMatchCount === 1 ? "Match" : "Matches"} Active
+              </span>
             </div>
 
-            {/* Plus Button */}
-            <button
-              onClick={() => handleStepMatchCount(1)}
-              disabled={tournament.activeMatchCount >= 5}
-              className={`w-9 h-9 rounded-lg flex items-center justify-center font-black transition-all cursor-pointer ${
-                tournament.activeMatchCount >= 5
-                  ? "opacity-30 cursor-not-allowed text-slate-500"
-                  : "bg-purple-950/70 hover:bg-purple-800 text-purple-200 border border-purple-500/20 active:scale-95"
-              }`}
-              title="Add 2 Teams (1 Match)"
-              aria-label="Increase teams"
-            >
-              <span className="material-symbols-outlined text-base">add</span>
-            </button>
+            <div className="flex items-center bg-[#130726] border border-purple-500/30 rounded-xl p-1 shadow-inner shadow-black/50">
+              {/* Minus Button */}
+              <button
+                onClick={() => handleStepMatchCount(-1)}
+                disabled={tournament.activeMatchCount <= 1}
+                className={`w-9 h-9 rounded-lg flex items-center justify-center font-black transition-all cursor-pointer ${
+                  tournament.activeMatchCount <= 1
+                    ? "opacity-30 cursor-not-allowed text-slate-500"
+                    : "bg-purple-950/70 hover:bg-purple-800 text-purple-200 border border-purple-500/20 active:scale-95"
+                }`}
+                title="Remove 2 Teams (1 Match)"
+                aria-label="Decrease teams"
+              >
+                <span className="material-symbols-outlined text-base">remove</span>
+              </button>
+
+              {/* Central Display */}
+              <div className="px-4 py-1 text-center min-w-[130px]">
+                <div className="text-sm font-black text-white tracking-wide flex items-center justify-center gap-1.5">
+                  <span className="text-purple-400 font-mono text-base">{tournament.activeMatchCount * 2}</span>
+                  <span className="text-xs uppercase font-bold text-slate-200">Teams</span>
+                </div>
+                <div className="text-[10px] font-mono text-purple-300/80 font-bold">
+                  {tournament.activeMatchCount} {tournament.activeMatchCount === 1 ? "Match" : "Matches"}
+                </div>
+              </div>
+
+              {/* Plus Button */}
+              <button
+                onClick={() => handleStepMatchCount(1)}
+                disabled={tournament.activeMatchCount >= 5}
+                className={`w-9 h-9 rounded-lg flex items-center justify-center font-black transition-all cursor-pointer ${
+                  tournament.activeMatchCount >= 5
+                    ? "opacity-30 cursor-not-allowed text-slate-500"
+                    : "bg-purple-950/70 hover:bg-purple-800 text-purple-200 border border-purple-500/20 active:scale-95"
+                }`}
+                title="Add 2 Teams (1 Match)"
+                aria-label="Increase teams"
+              >
+                <span className="material-symbols-outlined text-base">add</span>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -1041,7 +1222,7 @@ export default function LiveBroadcastControl() {
                   Quarter-Finals (QF)
                 </span>
               </div>
-              {tournament.matches
+              {activeMatches
                 .filter((m) => m.stage === "Quarter-Finals")
                 .map((m) => (
                   <div
@@ -1071,7 +1252,7 @@ export default function LiveBroadcastControl() {
                   Semi-Finals (SF)
                 </span>
               </div>
-              {tournament.matches
+              {activeMatches
                 .filter((m) => m.stage === "Semi-Finals")
                 .map((m) => (
                   <div
@@ -1101,7 +1282,7 @@ export default function LiveBroadcastControl() {
                   Grand Finals (GF)
                 </span>
               </div>
-              {tournament.matches
+              {activeMatches
                 .filter((m) => m.stage === "Grand Finals")
                 .map((m) => (
                   <div
@@ -1214,7 +1395,7 @@ export default function LiveBroadcastControl() {
                       }
                       className="px-2 py-0.5 rounded bg-[#140a27] border border-purple-500/20 text-xs text-slate-200 focus:outline-none"
                     >
-                      {VALORANT_MAP_POOL.map((map) => (
+                      {currentProfile.maps.map((map) => (
                         <option key={map} value={map}>
                           {map}
                         </option>
@@ -1412,25 +1593,56 @@ export default function LiveBroadcastControl() {
                 {/* Series Maps Won Quick Toggles */}
                 <div className="flex items-center justify-between text-[11px] pt-1 text-slate-400">
                   <div className="flex items-center gap-1.5">
-                    <span>Series:</span>
-                    <button
-                      onClick={() => updateMapsWon(m.id, "team1", 1)}
-                      className="px-1.5 py-0.5 rounded bg-purple-900/60 text-purple-300 hover:text-white cursor-pointer"
-                    >
-                      {m.team1.tag}: {m.team1.mapsWon}W
-                    </button>
-                    <span>-</span>
-                    <button
-                      onClick={() => updateMapsWon(m.id, "team2", 1)}
-                      className="px-1.5 py-0.5 rounded bg-purple-900/60 text-purple-300 hover:text-white cursor-pointer"
-                    >
-                      {m.team2.tag}: {m.team2.mapsWon}W
-                    </button>
+                    <span>Maps:</span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => updateMapsWon(m.id, "team1", 1)}
+                        className="px-1.5 py-0.5 rounded bg-purple-900/60 hover:bg-purple-800 text-purple-200 font-bold cursor-pointer"
+                        title="Add Map Win to Team 1"
+                      >
+                        {m.team1.tag}: {m.team1.mapsWon}W +
+                      </button>
+                      <button
+                        onClick={() => updateMapsWon(m.id, "team1", -1)}
+                        className="px-1 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white text-[10px] cursor-pointer"
+                        title="Subtract Map Win"
+                      >
+                        -
+                      </button>
+                    </div>
+                    <span>/</span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => updateMapsWon(m.id, "team2", 1)}
+                        className="px-1.5 py-0.5 rounded bg-purple-900/60 hover:bg-purple-800 text-purple-200 font-bold cursor-pointer"
+                        title="Add Map Win to Team 2"
+                      >
+                        {m.team2.tag}: {m.team2.mapsWon}W +
+                      </button>
+                      <button
+                        onClick={() => updateMapsWon(m.id, "team2", -1)}
+                        className="px-1 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white text-[10px] cursor-pointer"
+                        title="Subtract Map Win"
+                      >
+                        -
+                      </button>
+                    </div>
                   </div>
 
-                  <span className="font-mono text-[10px] text-purple-400">
-                    Rounds: {m.team1.score + m.team2.score}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-[10px] text-purple-400">
+                      Rounds: {m.team1.score + m.team2.score}
+                    </span>
+                    <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase font-mono ${
+                      m.status === 'live'
+                        ? 'bg-rose-950 text-rose-300 border border-rose-500/40'
+                        : m.status === 'ended'
+                        ? 'bg-slate-800 text-slate-300'
+                        : 'bg-emerald-950 text-emerald-300 border border-emerald-500/30'
+                    }`}>
+                      {m.status}
+                    </span>
+                  </div>
                 </div>
               </div>
             );

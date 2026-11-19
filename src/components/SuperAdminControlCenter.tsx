@@ -4922,7 +4922,7 @@ const SuperAdminControlCenter: React.FC<SuperAdminControlCenterProps> = ({
                         >
                           <option value="dashboard">Dashboard (Home)</option>
                           <option value="ideahub">Idea Curator Hub</option>
-                          <option value="planned_events">Planned Events</option>
+                          <option value="planned_events">Events (Live Sync)</option>
                           <option value="members">Members Roster</option>
                           <option value="idcard">ID Card Dossier</option>
                           <option value="payments">Payments &amp; Dues Portal</option>
