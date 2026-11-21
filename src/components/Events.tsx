@@ -16,6 +16,26 @@ import {
   EVENT_STATUS_OPTIONS,
 } from '@/types/events';
 import SpecularButton from './SpecularButton';
+import Gta6EventManager from './Gta6EventManager';
+
+// Helper to normalize image links (converts Imgur gallery or page URLs to direct image URLs)
+export function normalizeImageUrl(url: string): string {
+  if (!url) return '';
+  const trimmed = url.trim();
+
+  // If already a direct image format, return clean
+  if (/\.(jpeg|jpg|png|webp|gif|svg)(\?.*)?$/i.test(trimmed)) {
+    return trimmed;
+  }
+
+  // Handle Imgur gallery or post links (e.g., https://imgur.com/gallery/abc, https://imgur.com/a/abc, https://imgur.com/abc)
+  const imgurMatch = trimmed.match(/^https?:\/\/(?:i\.)?imgur\.com\/(?:gallery\/|a\/)?([a-zA-Z0-9]+)(?:[#?].*)?$/i);
+  if (imgurMatch && imgurMatch[1]) {
+    return `https://i.imgur.com/${imgurMatch[1]}.jpg`;
+  }
+
+  return trimmed;
+}
 
 interface EventsProps {
   isAdmin?: boolean;
@@ -38,6 +58,7 @@ export default function Events({
   const [selectedCategory, setSelectedCategory] = useState<EventType | 'All'>('All');
   const [selectedStatus, setSelectedStatus] = useState<EventStatus | 'All'>('All');
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [activeTab, setActiveTab] = useState<'events' | 'gta6'>('events');
 
   // Create / Edit modal state
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
@@ -137,7 +158,7 @@ export default function Events({
           eventType: formEventType,
           status: formStatus,
           registrationLink: formRegistrationLink.trim(),
-          bannerUrl: formBannerUrl.trim(),
+          bannerUrl: normalizeImageUrl(formBannerUrl),
         });
         if (ok) {
           showStatus('Event updated! Live on vrgc.live immediately.', 'success');
@@ -156,7 +177,7 @@ export default function Events({
             eventType: formEventType,
             status: formStatus,
             registrationLink: formRegistrationLink.trim(),
-            bannerUrl: formBannerUrl.trim(),
+            bannerUrl: normalizeImageUrl(formBannerUrl),
           },
           userEmail || 'admin@vrgc.club'
         );
@@ -277,6 +298,45 @@ export default function Events({
           </div>
         )}
       </div>
+
+      {/* Main Tabs Navigation (All Events vs Samvitya GTA 6) */}
+      <div className="flex items-center gap-3 p-1.5 bg-[#0f051c]/90 border border-purple-500/25 rounded-2xl w-fit">
+        <button
+          onClick={() => setActiveTab('events')}
+          className={`px-5 py-2.5 rounded-xl text-xs font-black transition-all flex items-center gap-2 cursor-pointer ${
+            activeTab === 'events'
+              ? 'bg-purple-600 text-white shadow-[0_0_20px_rgba(168,85,247,0.4)]'
+              : 'text-slate-400 hover:text-white'
+          }`}
+        >
+          <span className="material-symbols-outlined text-base">calendar_month</span>
+          <span>Public Events ({events.length})</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('gta6')}
+          className={`px-5 py-2.5 rounded-xl text-xs font-black transition-all flex items-center gap-2 cursor-pointer ${
+            activeTab === 'gta6'
+              ? 'bg-gradient-to-r from-rose-600 to-fuchsia-600 text-white shadow-[0_0_25px_rgba(244,63,94,0.4)]'
+              : 'text-rose-300/80 hover:text-rose-200 hover:bg-rose-950/30'
+          }`}
+        >
+          <span className="material-symbols-outlined text-base text-rose-400">sports_esports</span>
+          <span>Samvitya: GTA VI Hub</span>
+          <span className="px-1.5 py-0.5 rounded text-[9px] bg-rose-500/30 text-rose-200 border border-rose-500/40 font-mono">
+            GATE
+          </span>
+        </button>
+      </div>
+
+      {/* If GTA 6 Tab is active, render Gta6EventManager */}
+      {activeTab === 'gta6' && (
+        <Gta6EventManager isAdmin={isAdmin} userEmail={userEmail} userName={userName} />
+      )}
+
+      {/* Standard Events Flow */}
+      {activeTab === 'events' && (
+        <>
 
       {/* Metrics Bar */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -485,7 +545,7 @@ export default function Events({
                 {event.bannerUrl && (
                   <div className="rounded-2xl overflow-hidden border border-white/10 max-h-56 bg-black/50">
                     <img
-                      src={event.bannerUrl}
+                      src={normalizeImageUrl(event.bannerUrl)}
                       alt={event.name}
                       className="w-full h-full object-cover"
                       onError={(e) => ((e.target as HTMLElement).style.display = 'none')}
@@ -530,6 +590,8 @@ export default function Events({
             );
           })}
         </div>
+      )}
+      </>
       )}
 
       {/* Create / Edit Event Modal */}

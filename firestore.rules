@@ -171,6 +171,19 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // Samvitya 2026: VTOP Whitelist Passholders & GTA 6 Entry Passes
+    match /samvitya_passholders/{passId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /gta6_event_tickets/{ticketId} {
+      allow read: if true;
+      allow create: if true;
+      allow update: if isAdmin() || isActiveMember();
+      allow delete: if isAdmin();
+    }
+
     // =========================================================================
     // 6. Candidate Referrals
     // =========================================================================
