@@ -51,6 +51,8 @@ import {
   X,
   FileText,
   UserCheck,
+  UserPlus,
+  UserMinus,
   ShieldAlert,
   Trash2,
   Users,
@@ -285,12 +287,42 @@ const Payments: React.FC<PaymentsProps> = ({
 
   // Edit Campaign (Batch Invoice) Modal State
   const [editCampaignGroup, setEditCampaignGroup] = useState<CampaignGroup | null>(null);
+  const [editCampaignTab, setEditCampaignTab] = useState<'details' | 'members'>('details');
   const [editTitle, setEditTitle] = useState<string>('');
   const [editDescription, setEditDescription] = useState<string>('');
   const [editDueDate, setEditDueDate] = useState<string>('');
   const [editDueTime, setEditDueTime] = useState<string>('23:59');
   const [editVisibleToFaculty, setEditVisibleToFaculty] = useState<boolean>(true);
   const [savingEdit, setSavingEdit] = useState<boolean>(false);
+  const [editMembersSearch, setEditMembersSearch] = useState<string>('');
+  const [showAddMembersSection, setShowAddMembersSection] = useState<boolean>(false);
+  const [addMembersSearch, setAddMembersSearch] = useState<string>('');
+  const [selectedAddMemberEmails, setSelectedAddMemberEmails] = useState<string[]>([]);
+  const [addingMembers, setAddingMembers] = useState<boolean>(false);
+  const [showRosterAddMembersModal, setShowRosterAddMembersModal] = useState<boolean>(false);
+
+  // Helper to recompute campaign metrics
+  const recalculateCampaignGroup = (group: CampaignGroup, newItems: PaymentItem[]): CampaignGroup => {
+    const totalAssigned = newItems.length;
+    const paidCount = newItems.filter((i) => i.status === 'Paid').length;
+    const pendingCount = newItems.filter((i) => i.status === 'Pending' || i.status === 'Processing').length;
+    const failedCount = newItems.filter((i) => i.status === 'Failed').length;
+    const totalCollected = paidCount * group.amount;
+    const totalTarget = totalAssigned * group.amount;
+    const percentage = totalTarget > 0 ? Math.round((totalCollected / totalTarget) * 100) : 0;
+
+    return {
+      ...group,
+      items: newItems,
+      totalAssigned,
+      paidCount,
+      pendingCount,
+      failedCount,
+      totalCollected,
+      totalTarget,
+      percentage,
+    };
+  };
 
   // Edit Single Payment Modal State
   const [editSinglePayment, setEditSinglePayment] = useState<PaymentItem | null>(null);
@@ -307,6 +339,8 @@ const Payments: React.FC<PaymentsProps> = ({
     itemIds: string[];
     memberName?: string;
     totalAssigned?: number;
+    isPaid?: boolean;
+    amount?: number;
   } | null>(null);
   const [deletingInProgress, setDeletingInProgress] = useState<boolean>(false);
 
@@ -846,11 +880,99 @@ const Payments: React.FC<PaymentsProps> = ({
     const first = group.items[0];
     const { date, time } = splitDueDateTime(group.due_date || first?.due_date);
     setEditCampaignGroup(group);
+    setEditCampaignTab('details');
+    setShowAddMembersSection(false);
+    setSelectedAddMemberEmails([]);
+    setAddMembersSearch('');
+    setEditMembersSearch('');
     setEditTitle(group.title);
     setEditDescription(first?.description || '');
     setEditDueDate(date);
     setEditDueTime(time);
     setEditVisibleToFaculty(first?.visible_to_faculty !== false);
+  };
+
+  // Add members to an invoice campaign
+  const handleAddMembersToInvoice = async (targetGroup: CampaignGroup, memberEmailsToAdd: string[]) => {
+    if (!targetGroup || !isAdminState || memberEmailsToAdd.length === 0) return;
+
+    // Filter out members that already have this invoice
+    const existingEmails = new Set(targetGroup.items.map((i) => (i.user_email || '').toLowerCase()));
+    const toAdd = memberEmailsToAdd.filter((email) => !existingEmails.has(email.toLowerCase()));
+    if (toAdd.length === 0) {
+      showToast('Selected member(s) already have this invoice issued.', 'info');
+      return;
+    }
+
+    setAddingMembers(true);
+    try {
+      const firstItem = targetGroup.items[0];
+      const isEditingThis = editCampaignGroup && editCampaignGroup.key === targetGroup.key;
+      const effectiveTitle = isEditingThis && editTitle.trim() ? editTitle.trim() : targetGroup.title;
+      const effectiveDesc = isEditingThis && editDescription.trim() ? editDescription.trim() : (firstItem?.description || 'VRGC Member Payment Due');
+      const effectiveDueDate = isEditingThis && editDueDate ? formatDueDateTimeToIso(editDueDate, editDueTime) : (targetGroup.due_date || firstItem?.due_date || '');
+      const effectiveVisibleToFaculty = isEditingThis ? editVisibleToFaculty : (firstItem?.visible_to_faculty !== false);
+
+      const newlyCreatedItems: PaymentItem[] = [];
+      for (const email of toAdd) {
+        const m = membersMap.get(email.toLowerCase());
+        const created = await createPaymentInFirestore({
+          user_email: email.toLowerCase(),
+          candidate_name: m?.name || '',
+          registration_number: m?.regNo || '',
+          team: m?.team || '',
+          title: effectiveTitle,
+          description: effectiveDesc,
+          category: targetGroup.category,
+          amount: targetGroup.amount,
+          currency: targetGroup.currency || 'INR',
+          status: 'Pending' as PaymentStatus,
+          due_date: effectiveDueDate,
+          visible_to_faculty: effectiveVisibleToFaculty,
+        });
+        if (created) {
+          newlyCreatedItems.push(created);
+        }
+      }
+
+      if (newlyCreatedItems.length > 0) {
+        // Update global payments state
+        setPayments((prev) => [...newlyCreatedItems, ...prev]);
+
+        // Update editCampaignGroup state if open
+        setEditCampaignGroup((prev) => {
+          if (!prev || prev.key !== targetGroup.key) return prev;
+          const updatedItems = [...prev.items, ...newlyCreatedItems];
+          return recalculateCampaignGroup(prev, updatedItems);
+        });
+
+        // Update activeRosterCampaign state if open
+        setActiveRosterCampaign((prev) => {
+          if (!prev || prev.key !== targetGroup.key) return prev;
+          const updatedItems = [...prev.items, ...newlyCreatedItems];
+          return recalculateCampaignGroup(prev, updatedItems);
+        });
+
+        logAdminAction({
+          adminEmail: userEmail || 'admin',
+          action: 'ASSIGN_MULTI',
+          targetEmail: `${newlyCreatedItems.length} members`,
+          details: `Added ${newlyCreatedItems.length} member(s) to invoice campaign "${effectiveTitle}"`,
+        });
+
+        showToast(`Successfully issued invoice to ${newlyCreatedItems.length} member(s)! 🎉`, 'success');
+        setSelectedAddMemberEmails([]);
+        setShowAddMembersSection(false);
+        setShowRosterAddMembersModal(false);
+      } else {
+        showToast('Failed to add members to invoice.', 'error');
+      }
+    } catch (err: any) {
+      console.error('Error adding members to invoice:', err);
+      showToast(err.message || 'Failed to add members to invoice.', 'error');
+    } finally {
+      setAddingMembers(false);
+    }
   };
 
   // Save Edit Campaign (Batch)
@@ -987,6 +1109,9 @@ const Payments: React.FC<PaymentsProps> = ({
         if (activeRosterCampaign && activeRosterCampaign.title.trim() === deleteTarget.title.trim()) {
           setActiveRosterCampaign(null);
         }
+        if (editCampaignGroup && editCampaignGroup.title.trim() === deleteTarget.title.trim()) {
+          setEditCampaignGroup(null);
+        }
 
         // 2. Perform fast Firestore batch delete
         const ok = await batchDeleteCampaignFromFirestore(itemIds);
@@ -1007,7 +1132,12 @@ const Payments: React.FC<PaymentsProps> = ({
         setPayments((prev) => prev.filter((p) => p.id !== paymentId));
         if (activeRosterCampaign) {
           setActiveRosterCampaign((prev) =>
-            prev ? { ...prev, items: prev.items.filter((item) => item.id !== paymentId) } : null
+            prev ? recalculateCampaignGroup(prev, prev.items.filter((item) => item.id !== paymentId)) : null
+          );
+        }
+        if (editCampaignGroup) {
+          setEditCampaignGroup((prev) =>
+            prev ? recalculateCampaignGroup(prev, prev.items.filter((item) => item.id !== paymentId)) : null
           );
         }
 
@@ -2296,6 +2426,21 @@ const Payments: React.FC<PaymentsProps> = ({
                   <Filter className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-purple-400 pointer-events-none" />
                 </div>
 
+                {isAdminState && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedAddMemberEmails([]);
+                      setAddMembersSearch('');
+                      setShowRosterAddMembersModal(true);
+                    }}
+                    className="px-3 py-2 rounded-xl bg-purple-600/30 hover:bg-purple-600/50 text-purple-200 border border-purple-500/40 text-xs font-bold transition-all flex items-center justify-center gap-1.5 shrink-0 cursor-pointer"
+                  >
+                    <UserPlus className="w-3.5 h-3.5 text-purple-300" />
+                    <span>Add Members</span>
+                  </button>
+                )}
+
                 <button
                   onClick={() => handleExportCSV(activeRosterCampaign.title, true)}
                   className="px-3 py-2 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 text-xs font-bold transition-all flex items-center justify-center gap-1.5 shrink-0"
@@ -2386,6 +2531,8 @@ const Payments: React.FC<PaymentsProps> = ({
                                     title: item.title,
                                     itemIds: [item.id],
                                     memberName: name || item.user_email,
+                                    isPaid: item.status === 'Paid',
+                                    amount: item.amount,
                                   })
                                 }
                                 className="p-1 text-slate-500 hover:text-rose-400 rounded-lg transition-all"
@@ -2492,6 +2639,8 @@ const Payments: React.FC<PaymentsProps> = ({
                                         title: item.title,
                                         itemIds: [item.id],
                                         memberName: name || item.user_email,
+                                        isPaid: item.status === 'Paid',
+                                        amount: item.amount,
                                       })
                                     }
                                     title="Delete record"
@@ -2513,9 +2662,179 @@ const Payments: React.FC<PaymentsProps> = ({
             <div className="pt-2 flex justify-end">
               <button
                 onClick={() => setActiveRosterCampaign(null)}
-                className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs shadow-[0_0_20px_rgba(168,85,247,0.4)] transition-all"
+                className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs shadow-[0_0_20px_rgba(168,85,247,0.4)] transition-all cursor-pointer"
               >
                 Close Roster
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add Members to Campaign Modal (From Roster) */}
+      {showRosterAddMembersModal && activeRosterCampaign && isAdminState && (
+        <div className="fixed inset-0 z-[135] bg-black/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-200">
+          <div className="bg-[#0e0518] border border-purple-500/50 rounded-2xl sm:rounded-3xl max-w-xl w-full p-5 sm:p-7 space-y-4 shadow-[0_0_60px_rgba(168,85,247,0.3)] relative max-h-[85vh] flex flex-col">
+            <button
+              type="button"
+              disabled={addingMembers}
+              onClick={() => {
+                setShowRosterAddMembersModal(false);
+                setSelectedAddMemberEmails([]);
+                setAddMembersSearch('');
+              }}
+              className="absolute top-4 right-4 p-2 text-slate-400 hover:text-white rounded-full bg-white/5 hover:bg-white/10 transition-all disabled:opacity-50 cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="space-y-1 pr-6">
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                <UserPlus className="w-3.5 h-3.5 text-purple-400" /> ISSUE INVOICE TO MEMBERS
+              </div>
+              <h3 className="text-xl font-bold text-white">Add Members to Invoice</h3>
+              <p className="text-xs text-slate-400">
+                Invoice: <strong className="text-white">{activeRosterCampaign.title}</strong> (₹{activeRosterCampaign.amount} INR)
+              </p>
+            </div>
+
+            {/* Selection controls & search */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-slate-300 font-bold">
+                  Select Members ({selectedAddMemberEmails.length} selected)
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const existingSet = new Set(activeRosterCampaign.items.map((i) => (i.user_email || '').toLowerCase()));
+                      const filteredEmails = membersList
+                        .filter((m) => {
+                          if (existingSet.has(m.email.toLowerCase())) return false;
+                          if (!addMembersSearch.trim()) return true;
+                          const q = addMembersSearch.toLowerCase();
+                          return m.name.toLowerCase().includes(q) || m.regNo.toLowerCase().includes(q) || m.email.toLowerCase().includes(q) || m.team.toLowerCase().includes(q);
+                        })
+                        .map((m) => m.email);
+                      setSelectedAddMemberEmails(Array.from(new Set([...selectedAddMemberEmails, ...filteredEmails])));
+                    }}
+                    className="text-[10px] text-purple-400 hover:text-purple-300 underline font-semibold cursor-pointer"
+                  >
+                    Select All Filtered
+                  </button>
+                  <span className="text-slate-600">|</span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedAddMemberEmails([])}
+                    className="text-[10px] text-rose-400 hover:text-rose-300 underline font-semibold cursor-pointer"
+                  >
+                    Deselect All
+                  </button>
+                </div>
+              </div>
+
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Search available members by name, regNo, team..."
+                  value={addMembersSearch}
+                  onChange={(e) => setAddMembersSearch(e.target.value)}
+                  className="w-full pl-9 pr-3 py-2 rounded-xl bg-black/50 border border-white/10 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-purple-500"
+                />
+              </div>
+            </div>
+
+            {/* Unassigned members scroll list */}
+            <div className="flex-1 overflow-y-auto custom-scrollbar border border-white/10 rounded-xl bg-black/40 p-2 space-y-1 min-h-[180px] max-h-[300px]">
+              {(() => {
+                const existingSet = new Set(activeRosterCampaign.items.map((i) => (i.user_email || '').toLowerCase()));
+                const available = membersList.filter((m) => {
+                  if (existingSet.has(m.email.toLowerCase())) return false;
+                  if (!addMembersSearch.trim()) return true;
+                  const q = addMembersSearch.toLowerCase();
+                  return m.name.toLowerCase().includes(q) || m.regNo.toLowerCase().includes(q) || m.email.toLowerCase().includes(q) || m.team.toLowerCase().includes(q);
+                });
+
+                if (available.length === 0) {
+                  return (
+                    <div className="p-8 text-center text-xs text-slate-400">
+                      {membersList.length === 0
+                        ? 'Loading member directory...'
+                        : 'All available crew members already have this invoice issued.'}
+                    </div>
+                  );
+                }
+
+                return available.map((m) => {
+                  const isSelected = selectedAddMemberEmails.includes(m.email);
+                  return (
+                    <div
+                      key={m.email}
+                      onClick={() => {
+                        if (isSelected) {
+                          setSelectedAddMemberEmails((prev) => prev.filter((e) => e !== m.email));
+                        } else {
+                          setSelectedAddMemberEmails((prev) => [...prev, m.email]);
+                        }
+                      }}
+                      className={`flex items-center justify-between p-2 rounded-lg cursor-pointer transition-all ${
+                        isSelected
+                          ? 'bg-purple-600/20 border border-purple-500/40 text-white'
+                          : 'hover:bg-white/5 border border-transparent text-slate-300'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => {}}
+                          className="w-4 h-4 rounded accent-purple-500 cursor-pointer"
+                        />
+                        <div className="min-w-0 text-left">
+                          <div className="font-bold text-xs truncate text-white">
+                            {m.name} <span className="text-[10px] text-purple-300 font-normal">({m.regNo || 'N/A'})</span>
+                          </div>
+                          <div className="text-[10px] text-slate-400 truncate">{m.email}</div>
+                        </div>
+                      </div>
+                      <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-white/5 text-purple-300 border border-white/10 shrink-0">
+                        {m.team || 'Crew'}
+                      </span>
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+
+            <div className="pt-2 flex gap-3">
+              <button
+                type="button"
+                disabled={addingMembers}
+                onClick={() => {
+                  setShowRosterAddMembersModal(false);
+                  setSelectedAddMemberEmails([]);
+                  setAddMembersSearch('');
+                }}
+                className="flex-1 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white font-bold text-xs transition-all disabled:opacity-50 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={addingMembers || selectedAddMemberEmails.length === 0}
+                onClick={() => handleAddMembersToInvoice(activeRosterCampaign, selectedAddMemberEmails)}
+                className="flex-1 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs shadow-[0_0_20px_rgba(168,85,247,0.4)] transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+              >
+                {addingMembers ? (
+                  <>
+                    <RotateCcw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Issuing Invoices...</span>
+                  </>
+                ) : (
+                  <span>Issue to {selectedAddMemberEmails.length} Member(s)</span>
+                )}
               </button>
             </div>
           </div>
@@ -3829,6 +4148,17 @@ const Payments: React.FC<PaymentsProps> = ({
                 )}
               </p>
             </div>
+
+            {deleteTarget.isPaid && (
+              <div className="p-3.5 rounded-xl bg-amber-950/50 border border-amber-500/50 text-xs text-amber-200 space-y-1">
+                <div className="font-bold flex items-center gap-1.5 text-amber-400">
+                  <AlertCircle className="w-4 h-4 shrink-0" /> CAUTION: Member Already Paid
+                </div>
+                <p className="text-[11px] text-amber-200/90 leading-relaxed">
+                  <strong>{deleteTarget.memberName}</strong> has already completed payment of <strong className="text-white">₹{deleteTarget.amount || '—'} INR</strong> for this invoice. Deleting will permanently remove their payment and transaction record from the financial ledger.
+                </p>
+              </div>
+            )}
 
             <div className="p-3.5 rounded-xl bg-rose-950/30 border border-rose-500/30 text-xs text-rose-200 space-y-1">
               <div className="font-bold flex items-center gap-1.5 text-rose-300">
